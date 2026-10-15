@@ -13,7 +13,7 @@ CREATE TABLE users (user_id INTEGER PRIMARY KEY,
   middle_name VARCHAR(100), login VARCHAR(100) NOT NULL UNIQUE,
   role_id INTEGER NOT NULL REFERENCES roles(role_id));
 CREATE TABLE products (product_id INTEGER PRIMARY KEY,
-  article VARCHAR(50) UNIQUE, category VARCHAR(100) NOT NULL,
+  article VARCHAR(50), category VARCHAR(100) NOT NULL,
   subcategory VARCHAR(100), product_name VARCHAR(200) NOT NULL,
   manufacturer VARCHAR(100), description VARCHAR(1000),
   composition VARCHAR(200), price NUMERIC(10,2) NOT NULL,
@@ -34,6 +34,12 @@ CREATE TABLE order_items (order_item_id INTEGER PRIMARY KEY,
   quantity INTEGER NOT NULL, price NUMERIC(10,2) NOT NULL);
 """
 
+# Товар в других файлах ищем по артикулу или по наименованию
+PRODUCT = "(article = ? OR product_name = ?)"
+# Клиента в заказах ищем по логину или по ФИО
+USER = ("(login = ? OR TRIM(last_name || ' ' || first_name || ' '"
+        " || IFNULL(middle_name, '')) = ?)")
+
 
 def excel(name):
     # Ищем файл во всех подпапках: не важно, как распакован архив
@@ -41,6 +47,22 @@ def excel(name):
     if not found:
         raise SystemExit(f"Нет {name}_import.xlsx: распакуй Прил_2")
     return pd.read_excel(found[0]).fillna("").to_dict("records")
+
+
+def get(row, *words, default=KeyError):
+    # Колонку ищем по названию без учёта регистра: сначала точное
+    # совпадение, потом часть слова («Цена, руб.» найдётся по «цена»)
+    columns = {str(c).strip().lower(): c for c in row}
+    for word in words:
+        if word in columns:
+            return row[columns[word]]
+    for word in words:
+        for name, column in columns.items():
+            if word in name:
+                return row[column]
+    if default is KeyError:
+        raise SystemExit(f"Нет колонки {words}. Есть: {list(row)}")
+    return default
 
 
 if os.path.exists("chudo.db"):
@@ -53,45 +75,63 @@ for r in excel("Products"):
                " product_name, manufacturer, description,"
                " composition, price, image_path)"
                " VALUES (?,?,?,?,?,?,?,?,?)",
-               (r["Артикул"], r["Категория"], r["Подкатегория"],
-                r["Наименование"], r["Производство"], r["Описание"],
-                r["Состав"], r["Цена"], r["Фото"]))
+               (get(r, "артикул", default=""), get(r, "категория"),
+                get(r, "подкатегория", default=""),
+                get(r, "наименование", "название"),
+                get(r, "производство", "производитель"),
+                get(r, "описание", default=""), get(r, "состав"),
+                get(r, "цена", "стоимость"),
+                get(r, "фото", "изображение", default="")))
 
 for r in excel("Sizes"):
-    db.execute("INSERT INTO sizes (size_value) VALUES (?)",
-               (r["Размер"],))
+    db.execute("INSERT OR IGNORE INTO sizes (size_value) VALUES (?)",
+               (get(r, "размер"),))
 
 for r in excel("Users"):
+    role = get(r, "роль")
     db.execute("INSERT OR IGNORE INTO roles (role_name) VALUES (?)",
-               (r["Роль"],))
-    fio = r["ФИО"].split() + [None]
+               (role,))
+    fio = get(r, "фио", default="")
+    if fio:
+        parts = fio.split() + [None]
+    else:
+        parts = [get(r, "фамилия"), get(r, "имя"),
+                 get(r, "отчество", default=None)]
     db.execute("INSERT INTO users (last_name, first_name,"
                " middle_name, login, role_id)"
                " SELECT ?, ?, ?, ?, role_id FROM roles"
                " WHERE role_name = ?",
-               (fio[0], fio[1], fio[2], r["Логин"], r["Роль"]))
+               (parts[0], parts[1], parts[2], get(r, "логин"), role))
 
 for r in excel("Stock_Items"):
+    model = get(r, "артикул", "наименование", "модель", "товар")
     db.execute("INSERT INTO stock_items (product_id, size_id,"
                " quantity_available) SELECT product_id, size_id, ?"
-               " FROM products, sizes"
-               " WHERE article = ? AND size_value = ?",
-               (r["Количество"], r["Артикул"], r["Размер"]))
+               " FROM products, sizes WHERE " + PRODUCT +
+               " AND size_value = ?",
+               (get(r, "количество"), model, model, get(r, "размер")))
 
 for r in excel("Orders"):
+    number = get(r, "номер")
+    client = get(r, "логин", "клиент", "фио")
     db.execute("INSERT OR IGNORE INTO orders (order_id, order_date,"
                " user_id) SELECT ?, ?, user_id FROM users"
-               " WHERE login = ?",
-               (r["Номер заказа"], str(r["Дата заказа"])[:10],
-                r["Логин"]))
+               " WHERE " + USER,
+               (number, str(get(r, "дата"))[:10], client, client))
+    model = get(r, "артикул", "наименование", "модель", "товар")
+    # Нет цены в заказе -> берём цену товара из каталога
     db.execute("INSERT INTO order_items (order_id, product_id,"
                " size_id, quantity, price)"
-               " SELECT ?, product_id, size_id, ?, ?"
-               " FROM products, sizes"
-               " WHERE article = ? AND size_value = ?",
-               (r["Номер заказа"], r["Количество"], r["Цена"],
-                r["Артикул"], r["Размер"]))
+               " SELECT ?, product_id, size_id, ?, COALESCE(?, price)"
+               " FROM products, sizes WHERE " + PRODUCT +
+               " AND size_value = ?",
+               (number, get(r, "количество"),
+                get(r, "цена", default=None), model, model,
+                get(r, "размер")))
 
 db.commit()
-count = db.execute("SELECT COUNT(*) FROM products").fetchone()[0]
-print("База готова, товаров:", count)
+for table in ("products", "sizes", "stock_items", "users", "orders",
+              "order_items"):
+    count = db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+    print(f"{table}: {count} строк")
+print("База готова")
