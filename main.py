@@ -16,9 +16,12 @@ for path in glob.glob("**/*", recursive=True):
 
 
 def picture(name, size):
-    # Нет фото или файла -> заглушка picture.png
-    path = files.get(name) or files["picture.png"]
-    image = Image.open(path)
+    # Нет фото -> заглушка picture.png; нет и её -> серый квадрат
+    path = files.get(name) or files.get("picture.png")
+    if path:
+        image = Image.open(path)
+    else:
+        image = Image.new("RGB", (size, size), "#CCCCCC")
     image.thumbnail((size, size))
     photo = ImageTk.PhotoImage(image)
     images.append(photo)  # без ссылки tkinter удалит картинку
@@ -30,6 +33,12 @@ root.title("Чудо Обувь — Каталог товаров")
 root.geometry("1000x700")
 root.configure(bg=BG)
 images = []
+
+# Иконка окна: файл .ico или со словом «icon»/«иконка» в имени
+icon = [n for n in files if n.lower().endswith(".ico")
+        or "icon" in n.lower() or "иконк" in n.lower()]
+if icon:
+    root.iconphoto(True, picture(icon[0], 64))
 
 # Логотип: любой файл, в имени которого есть «logo» или «лого»
 logo = [n for n in files
