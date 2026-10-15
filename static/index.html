@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Магазин обуви</title>
+<style>
+  body { font-family: sans-serif; max-width: 900px; margin: 20px auto; padding: 0 12px; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 20px; }
+  th, td { border: 1px solid #ccc; padding: 6px 8px; text-align: left; }
+  th { background: #f0f0f0; }
+  input { padding: 5px; margin: 2px; }
+  button { padding: 5px 10px; cursor: pointer; }
+  .box { border: 1px solid #ccc; padding: 10px; margin-bottom: 20px; }
+  #msg { color: #c00; }
+</style>
+</head>
+<body>
+<h1>Магазин обуви</h1>
+<p id="msg"></p>
+
+<h2>Каталог</h2>
+<table>
+  <thead><tr><th>ID</th><th>Название</th><th>Цена</th><th>Остаток</th><th></th></tr></thead>
+  <tbody id="products"></tbody>
+</table>
+
+<div class="box">
+  <h3 id="formTitle">Добавить товар</h3>
+  <input id="pName" placeholder="Название">
+  <input id="pPrice" type="number" placeholder="Цена" min="0">
+  <input id="pStock" type="number" placeholder="Кол-во" min="0">
+  <button id="saveBtn" onclick="saveProduct()">Добавить</button>
+  <button onclick="resetForm()">Очистить</button>
+</div>
+
+<div class="box">
+  <h3>Корзина</h3>
+  <ul id="cart"></ul>
+  <p>Итого: <b id="total">0</b> ₽</p>
+  <input id="customer" placeholder="Ваше имя">
+  <button onclick="makeOrder()">Оформить заказ</button>
+</div>
+
+<h2>Заказы</h2>
+<table>
+  <thead><tr><th>№</th><th>Покупатель</th><th>Сумма</th><th>Дата</th></tr></thead>
+  <tbody id="orders"></tbody>
+</table>
+
+<script>
+let products = [];
+let cart = {}; // { product_id: qty }
+let editId = null; // null = добавляем, число = редактируем
+
+const $ = id => document.getElementById(id);
+const showError = t => { $('msg').textContent = t; setTimeout(() => $('msg').textContent = '', 3000); };
+
+async function loadProducts() {
+  products = await (await fetch('/api/products')).json();
+  $('products').innerHTML = products.map(p => `
+    <tr>
+      <td>${p.id}</td><td>${p.name}</td><td>${p.price} ₽</td><td>${p.stock}</td>
+      <td>
+        <button onclick="toCart(${p.id})">В корзину</button>
+        <button onclick="editProduct(${p.id})">Изменить</button>
+        <button onclick="delProduct(${p.id})">Удалить</button>
+      </td>
+    </tr>`).join('');
+  renderCart();
+}
+
+async function loadOrders() {
+  const orders = await (await fetch('/api/orders')).json();
+  $('orders').innerHTML = orders.map(o =>
+    `<tr><td>${o.id}</td><td>${o.customer}</td><td>${o.total} ₽</td><td>${o.created}</td></tr>`
+  ).join('');
+}
+
+async function saveProduct() {
+  const body = {
+    name: $('pName').value,
+    price: Number($('pPrice').value),
+    stock: Number($('pStock').value),
+  };
+  const url = editId ? '/api/products/' + editId : '/api/products';
+  const r = await fetch(url, {
+    method: editId ? 'PUT' : 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) return showError(await r.text());
+  resetForm();
+  loadProducts();
+}
+
+function editProduct(id) {
+  const p = products.find(x => x.id === id);
+  editId = id;
+  $('pName').value = p.name;
+  $('pPrice').value = p.price;
+  $('pStock').value = p.stock;
+  $('formTitle').textContent = 'Изменить товар #' + id;
+  $('saveBtn').textContent = 'Сохранить';
+}
+
+function resetForm() {
+  editId = null;
+  $('pName').value = $('pPrice').value = $('pStock').value = '';
+  $('formTitle').textContent = 'Добавить товар';
+  $('saveBtn').textContent = 'Добавить';
+}
+
+async function delProduct(id) {
+  if (!confirm('Удалить товар?')) return;
+  const r = await fetch('/api/products/' + id, { method: 'DELETE' });
+  if (!r.ok) return showError('Не удалось удалить (товар есть в заказах?)');
+  delete cart[id];
+  loadProducts();
+}
+
+function toCart(id) {
+  const p = products.find(x => x.id === id);
+  if ((cart[id] || 0) >= p.stock) return showError('Больше нет на складе');
+  cart[id] = (cart[id] || 0) + 1;
+  renderCart();
+}
+
+function renderCart() {
+  let total = 0;
+  $('cart').innerHTML = Object.entries(cart).map(([id, qty]) => {
+    const p = products.find(x => x.id == id);
+    if (!p) return '';
+    total += p.price * qty;
+    return `<li>${p.name} × ${qty} <button onclick="delete cart[${id}]; renderCart()">✕</button></li>`;
+  }).join('');
+  $('total').textContent = total;
+}
+
+async function makeOrder() {
+  const items = Object.entries(cart).map(([id, qty]) => ({ product_id: Number(id), qty }));
+  const r = await fetch('/api/orders', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ customer: $('customer').value, items }),
+  });
+  if (!r.ok) return showError(await r.text());
+  const o = await r.json();
+  alert(`Заказ №${o.id} оформлен на ${o.total} ₽`);
+  cart = {};
+  loadProducts();
+  loadOrders();
+}
+
+loadProducts();
+loadOrders();
+</script>
+</body>
+</html>
